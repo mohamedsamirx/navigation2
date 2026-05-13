@@ -65,6 +65,24 @@ void setUpOptimizerParams(
   params_.emplace_back(rclcpp::Parameter(node_name + ".lookahead_dist", s.lookahead_distance));
   params_.emplace_back(rclcpp::Parameter(node_name + ".motion_model", s.motion_model));
   params_.emplace_back(rclcpp::Parameter(node_name + ".critics", critics));
+  params_.emplace_back(
+    rclcpp::Parameter(node_name + ".use_low_pass_filter", s.use_low_pass_filter));
+  params_.emplace_back(
+    rclcpp::Parameter(node_name + ".filter_cutoff_frequency", s.filter_cutoff_frequency));
+  params_.emplace_back(rclcpp::Parameter(node_name + ".filter_order", s.filter_order));
+  params_.emplace_back(
+    rclcpp::Parameter(node_name + ".use_colored_noise", s.use_colored_noise));
+  params_.emplace_back(
+    rclcpp::Parameter(
+      node_name + ".colored_noise_exponent_vx", s.colored_noise_exponent_vx));
+  params_.emplace_back(
+    rclcpp::Parameter(
+      node_name + ".colored_noise_exponent_vy", s.colored_noise_exponent_vy));
+  params_.emplace_back(
+    rclcpp::Parameter(
+      node_name + ".colored_noise_exponent_wz", s.colored_noise_exponent_wz));
+  params_.emplace_back(
+    rclcpp::Parameter(node_name + ".std_reduction_factor", s.std_reduction_factor));
   params_.emplace_back(rclcpp::Parameter("controller_frequency", dummy_freq));
   // Inject plugin type for the chosen motion model so tests don't need an installed plugin
   params_.emplace_back(

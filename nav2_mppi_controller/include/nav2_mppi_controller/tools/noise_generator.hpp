@@ -100,6 +100,17 @@ protected:
    */
   void applyLowPassFilter(Eigen::ArrayXXf & signal) const;
 
+  // Based on: Vlahov et al., "Low Frequency Sampling in MPPI Control", RA-L 2024.
+  /**
+   * @brief Generate colored noise for a single control axis using frequency-domain
+   *        Gaussian sampling with PSD proportional to 1/f^gamma, then iFFT.
+   * @param noise Output matrix [batch_size, time_steps] filled with colored noise
+   * @param exponent The gamma exponent controlling smoothness (0 = white, higher = smoother)
+   * @param sigma The desired standard deviation of the output time-domain signal
+   */
+  void generateColoredNoise(
+    Eigen::ArrayXXf & noise, float exponent, float sigma);
+
   /**
    * @brief Thread to execute noise generation process
    */
@@ -138,6 +149,11 @@ protected:
   std::vector<double> lpf_a_;
   std::vector<double> lpf_b_;
   bool lpf_configured_{false};
+
+  bool use_colored_noise_{false};
+  float colored_noise_exponent_vx_{2.0f};
+  float colored_noise_exponent_vy_{2.0f};
+  float colored_noise_exponent_wz_{2.0f};
 
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
 };

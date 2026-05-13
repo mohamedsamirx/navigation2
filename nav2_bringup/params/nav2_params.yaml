@@ -148,11 +148,13 @@ controller_server:
       vx_min: -0.35
       vy_max: 0.5
       wz_max: 1.9
+      std_reduction_factor: 1.0
       iteration_count: 1
       temperature: 0.3
       gamma: 0.015
       visualize: true
       publish_optimal_trajectory: true
+      publish_critics_stats: false
       regenerate_noises: true
       motion_model: "diff_drive"
       diff_drive:
@@ -160,6 +162,11 @@ controller_server:
       use_low_pass_filter: false
       filter_cutoff_frequency: 2.0
       filter_order: 2
+      # Colored noise (low-frequency MPPI) - alternative to LP filter
+      use_colored_noise: false
+      colored_noise_exponent_vx: 2.0
+      colored_noise_exponent_vy: 2.0
+      colored_noise_exponent_wz: 2.0
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3

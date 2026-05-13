@@ -46,6 +46,26 @@ void NoiseGenerator::initialize(
     ParameterType::Static);
   getParam(filter_order_, "filter_order", 2, ParameterType::Static);
 
+  bool use_colored_noise_param = false;
+  double cn_exp_vx = 2.0, cn_exp_vy = 2.0, cn_exp_wz = 2.0;
+  getParam(use_colored_noise_param, "use_colored_noise", false, ParameterType::Static);
+  getParam(cn_exp_vx, "colored_noise_exponent_vx", 2.0, ParameterType::Static);
+  getParam(cn_exp_vy, "colored_noise_exponent_vy", 2.0, ParameterType::Static);
+  getParam(cn_exp_wz, "colored_noise_exponent_wz", 2.0, ParameterType::Static);
+  colored_noise_exponent_vx_ = static_cast<float>(cn_exp_vx);
+  colored_noise_exponent_vy_ = static_cast<float>(cn_exp_vy);
+  colored_noise_exponent_wz_ = static_cast<float>(cn_exp_wz);
+
+  if (use_colored_noise_param && use_low_pass_filter_) {
+    RCLCPP_WARN(
+      logger_,
+      "Both use_colored_noise and use_low_pass_filter are true. "
+      "Using colored noise; LP filter will be disabled.");
+    use_low_pass_filter_ = false;
+  }
+  use_colored_noise_ = use_colored_noise_param;
+  generator_ = std::default_random_engine();
+
   configureLowPassFilter();
 
   if (regenerate_noises_) {
@@ -81,6 +101,9 @@ void NoiseGenerator::setNoisedControls(
   const models::ControlSequence & control_sequence)
 {
   std::unique_lock<std::mutex> guard(noise_lock_);
+  if (regenerate_noises_) {
+    noise_cond_.wait(guard, [this]() {return !ready_;});
+  }
 
   state.cvx = noises_vx_.rowwise() + control_sequence.vx.transpose();
   state.cvy = noises_vy_.rowwise() + control_sequence.vy.transpose();
@@ -102,29 +125,43 @@ void NoiseGenerator::reset(mppi::models::OptimizerSettings & settings, bool is_h
     noises_vx_.setZero(settings_.batch_size, settings_.time_steps);
     noises_vy_.setZero(settings_.batch_size, settings_.time_steps);
     noises_wz_.setZero(settings_.batch_size, settings_.time_steps);
-    ready_ = true;
-  }
-
-  if (regenerate_noises_) {
-    noise_cond_.notify_all();
-  } else {
+    ready_ = false;
     generateNoisedControls();
   }
+  noise_cond_.notify_all();
 }
 
 void NoiseGenerator::noiseThread()
 {
-  do {
+  while (true) {
     std::unique_lock<std::mutex> guard(noise_lock_);
-    noise_cond_.wait(guard, [this]() {return ready_;});
+    noise_cond_.wait(guard, [this]() {return ready_ || !active_;});
+    if (!active_) {
+      break;
+    }
     ready_ = false;
     generateNoisedControls();
-  } while (active_);
+    guard.unlock();
+    noise_cond_.notify_all();
+  }
 }
 
 void NoiseGenerator::generateNoisedControls()
 {
   auto & s = settings_;
+
+  if (use_colored_noise_) {
+    noises_vx_.resize(s.batch_size, s.time_steps);
+    noises_wz_.resize(s.batch_size, s.time_steps);
+    generateColoredNoise(noises_vx_, colored_noise_exponent_vx_, s.sampling_std.vx);
+    generateColoredNoise(noises_wz_, colored_noise_exponent_wz_, s.sampling_std.wz);
+    if (is_holonomic_) {
+      noises_vy_.resize(s.batch_size, s.time_steps);
+      generateColoredNoise(noises_vy_, colored_noise_exponent_vy_, s.sampling_std.vy);
+    }
+    return;
+  }
+
   int low_pass_warmup_steps = 0;
   if (lpf_configured_ && s.model_dt > 0.0f && filter_cutoff_frequency_ > 0.0) {
     const double sample_rate = 1.0 / static_cast<double>(s.model_dt);
@@ -136,35 +173,25 @@ void NoiseGenerator::generateNoisedControls()
       std::max(cutoff_response_steps, order_response_steps), 1, max_warmup_steps);
   }
 
-  auto generateNoise = [&](std::normal_distribution<float> & distribution) {
+  auto generate_white_noise =
+    [&](std::normal_distribution<float> & distribution) -> Eigen::ArrayXXf
+    {
       Eigen::ArrayXXf noise = Eigen::ArrayXXf::NullaryExpr(
         s.batch_size, s.time_steps + low_pass_warmup_steps,
         [&]() {return distribution(generator_);});
 
-      if (!lpf_configured_) {
-        return noise;
+      if (lpf_configured_) {
+        applyLowPassFilter(noise);
+        return noise.rightCols(s.time_steps).eval();
       }
 
-      applyLowPassFilter(noise);
-      return noise.rightCols(s.time_steps).eval();
+      return noise;
     };
 
-  if (lpf_configured_) {
-    noises_vx_ = generateNoise(ndistribution_vx_);
-    noises_wz_ = generateNoise(ndistribution_wz_);
-    if (is_holonomic_) {
-      noises_vy_ = generateNoise(ndistribution_vy_);
-    }
-    return;
-  }
-
-  noises_vx_ = Eigen::ArrayXXf::NullaryExpr(
-    s.batch_size, s.time_steps, [&]() {return ndistribution_vx_(generator_);});
-  noises_wz_ = Eigen::ArrayXXf::NullaryExpr(
-    s.batch_size, s.time_steps, [&]() {return ndistribution_wz_(generator_);});
+  noises_vx_ = generate_white_noise(ndistribution_vx_);
+  noises_wz_ = generate_white_noise(ndistribution_wz_);
   if (is_holonomic_) {
-    noises_vy_ = Eigen::ArrayXXf::NullaryExpr(
-      s.batch_size, s.time_steps, [&]() {return ndistribution_vy_(generator_);});
+    noises_vy_ = generate_white_noise(ndistribution_vy_);
   }
 }
 
@@ -336,6 +363,136 @@ void NoiseGenerator::applyLowPassFilter(Eigen::ArrayXXf & signal) const
 
       y_hist[0] = y;
       signal(row, col) = static_cast<float>(y);
+    }
+  }
+}
+
+// Implements Vlahov et al., "Low Frequency Sampling in MPPI Control", RA-L 2024.
+// Algorithm: sample Gaussians in frequency domain with PSD proportional to 1/f^gamma,
+// then iFFT to get time-correlated noise emphasising low frequencies.
+void NoiseGenerator::generateColoredNoise(
+  Eigen::ArrayXXf & noise, float exponent, float sigma)
+{
+  const int T = settings_.time_steps;
+  const int batch = settings_.batch_size;
+  if (T <= 0 || batch <= 0 || sigma <= 0.0f) {
+    noise.setZero(batch, T);
+    return;
+  }
+
+  const int sample_T = T * 2;
+
+  // TODO(anovate): For T > 128, consider switching to an FFT library (FFTW / Eigen FFT)
+  // for O(T log T) instead of the current O(T^2) direct summation.
+  if (sample_T > 128) {
+    RCLCPP_WARN_ONCE(
+      logger_,
+      "Colored noise iFFT uses direct O(T^2) summation. With doubled T=%d, "
+      "consider adding an FFT library for better performance.", sample_T);
+  }
+
+  // Number of unique frequency components for Hermitian-symmetric spectrum
+  const int N = sample_T / 2 + 1;
+  const float fmin = 1.0f / static_cast<float>(sample_T);
+
+  // Build frequency-domain PSD scaling: s_scale[k] = f[k]^(-exponent/2)
+  // with fmin cutoff so DC and very low bins don't blow up
+  Eigen::ArrayXf s_scale(N);
+  for (int k = 0; k < N; ++k) {
+    float f_k = static_cast<float>(k) / static_cast<float>(sample_T);
+    f_k = std::max(f_k, fmin);
+    s_scale(k) = std::pow(f_k, -exponent / 2.0f);
+  }
+
+  // Compute normalization sigma so that time-domain variance = 1
+  // sigma = 2 * sqrt(sum(w^2)) / T, where w = s_scale[1:end-1]
+  // with correction for the last frequency bin
+  double sum_sq = 0.0;
+  for (int k = 1; k < N - 1; ++k) {
+    sum_sq += static_cast<double>(s_scale(k)) * static_cast<double>(s_scale(k));
+  }
+  // Match ACDSLab MPPI-Generic's variance correction for the final frequency bin.
+  const float last_factor = (1.0f + static_cast<float>(sample_T % 2)) / 2.0f;
+  double last_val = static_cast<double>(s_scale(N - 1)) *
+    static_cast<double>(last_factor);
+  sum_sq += last_val * last_val;
+  double sigma_norm = 2.0 * std::sqrt(sum_sq) / static_cast<double>(sample_T);
+  if (sigma_norm < 1e-12) {
+    noise.setZero(batch, T);
+    return;
+  }
+
+  // Precompute iFFT transform matrix M (T x (2N-2) or so)
+  // z(t) = (1/T) * [Z_real[0] + sum_k 2*Z_real[k]*cos(2*pi*k*t/T)
+  //                  - 2*Z_imag[k]*sin(2*pi*k*t/T) ...]
+  // Build this as a matrix M of shape [T, 2*N] where columns are:
+  //   [Z_real[0], Z_real[1]..Z_real[N-1], Z_imag[1]..Z_imag[N-2]]
+  // But for simplicity and small T (~56), we process per-row using direct summation.
+
+  const float inv_sample_T = 1.0f / static_cast<float>(sample_T);
+  const float unit_scale_factor = 1.0f / static_cast<float>(sigma_norm);
+  const float two_pi_over_sample_T =
+    2.0f * static_cast<float>(M_PI) / static_cast<float>(sample_T);
+  constexpr int offset_t = 1;
+  constexpr float offset_decay_rate = 0.97f;
+
+  std::normal_distribution<float> ndist(0.0f, 1.0f);
+
+  for (int row = 0; row < batch; ++row) {
+    // Sample frequency-domain Gaussian with PSD scaling
+    // Z_real[k] ~ N(0, s_scale[k]), Z_imag[k] ~ N(0, s_scale[k])
+    // Hermitian constraints: Z_imag[0] = 0
+    //                        Z_imag[N-1] = 0 if T is even
+    Eigen::ArrayXf z_real(N), z_imag(N);
+    for (int k = 0; k < N; ++k) {
+      z_real(k) = ndist(generator_) * s_scale(k);
+      z_imag(k) = ndist(generator_) * s_scale(k);
+    }
+    // DC component must be real
+    z_imag(0) = 0.0f;
+    z_real(0) *= std::sqrt(2.0f);  // magnitude fix for DC
+
+    // If T is even, Nyquist component must be real
+    if (sample_T % 2 == 0) {
+      z_imag(N - 1) = 0.0f;
+      z_real(N - 1) *= std::sqrt(2.0f);  // magnitude fix
+    }
+
+    // iFFT via direct summation (Eq 4 from paper):
+    // z(t) = (1/T) * [ z_real[0] + 2*sum_{k=1}^{N-2}(z_real[k]*cos - z_imag[k]*sin)
+    //                   + z_real[N-1]*cos ]   (last term factor 1 if T even, 2 if odd)
+    Eigen::ArrayXf doubled_horizon_noise(sample_T);
+    for (int t = 0; t < sample_T; ++t) {
+      float val = z_real(0);
+
+      for (int k = 1; k < N - 1; ++k) {
+        float angle = two_pi_over_sample_T * static_cast<float>(k) * static_cast<float>(t);
+        val += 2.0f * (z_real(k) * std::cos(angle) - z_imag(k) * std::sin(angle));
+      }
+
+      // Last frequency bin
+      if (N > 1) {
+        float angle_last =
+          two_pi_over_sample_T * static_cast<float>(N - 1) * static_cast<float>(t);
+        if (sample_T % 2 == 0) {
+          // Nyquist bin: real only, factor 1
+          val += z_real(N - 1) * std::cos(angle_last);
+        } else {
+          // Odd T: last bin is a normal complex bin with factor 2
+          val += 2.0f * (z_real(N - 1) * std::cos(angle_last) -
+            z_imag(N - 1) * std::sin(angle_last));
+        }
+      }
+
+      doubled_horizon_noise(t) = val * inv_sample_T * unit_scale_factor;
+    }
+
+    const int clamped_offset_t = std::min(offset_t, sample_T - 1);
+    const float offset_value = doubled_horizon_noise(clamped_offset_t);
+    float decay = 1.0f;
+    for (int t = 0; t < T; ++t) {
+      noise(row, t) = sigma * (doubled_horizon_noise(t) - offset_value * decay);
+      decay *= offset_decay_rate;
     }
   }
 }

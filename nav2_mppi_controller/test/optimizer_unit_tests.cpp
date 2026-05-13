@@ -1054,6 +1054,32 @@ TEST(OptimizerTests, InterIterationConstraintsTests)
   EXPECT_NEAR(seq.vx(0), 0.55f, 1e-6);
 }
 
+TEST(OptimizerTests, StdReductionFactorParamLoading)
+{
+  auto node = std::make_shared<nav2::LifecycleNode>("std_red_node");
+  OptimizerTester optimizer_tester;
+
+  node->declare_parameter("mppic.std_reduction_factor", rclcpp::ParameterValue(0.7f));
+  node->declare_parameter("mppic.batch_size", rclcpp::ParameterValue(20));
+  node->declare_parameter("mppic.time_steps", rclcpp::ParameterValue(10));
+  node->declare_parameter(
+    "mppic.diff_drive.plugin",
+    rclcpp::ParameterValue("mppi::DiffDriveMotionModel"));
+  node->declare_parameter("controller_frequency", rclcpp::ParameterValue(30.0));
+
+  auto costmap_ros = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
+    "dummy_costmap", "", true);
+  std::string name = "test";
+  ParametersHandler param_handler(node, name);
+  rclcpp_lifecycle::State lstate;
+  costmap_ros->on_configure(lstate);
+  auto tf_buffer = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+
+  optimizer_tester.initialize(node, "mppic", costmap_ros, tf_buffer, &param_handler);
+
+  EXPECT_FLOAT_EQ(optimizer_tester.getSettings().std_reduction_factor, 0.7f);
+}
+
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

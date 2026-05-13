@@ -26,6 +26,14 @@ struct TestOptimizerSettings
   double lookahead_distance;
   std::string motion_model;
   bool consider_footprint;
+  bool use_low_pass_filter{false};
+  double filter_cutoff_frequency{2.0};
+  int filter_order{2};
+  bool use_colored_noise{false};
+  double colored_noise_exponent_vx{2.0};
+  double colored_noise_exponent_vy{2.0};
+  double colored_noise_exponent_wz{2.0};
+  double std_reduction_factor{1.0};
 };
 
 struct TestPose

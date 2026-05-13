@@ -62,6 +62,11 @@ This process is then repeated a number of times and returns a converged solution
  | use_low_pass_filter        | bool   | Default false. If true, apply a Butterworth low-pass filter to sampled control perturbations before adding them to the nominal control sequence (LP-MPPI-style sampling). |
  | filter_cutoff_frequency    | double | Default 2.0. Cutoff frequency (Hz) of the perturbation low-pass filter. Must be in (0, Nyquist), where Nyquist = 1 / (2 * model_dt). Values above Nyquist are clamped with a warning. |
  | filter_order               | int    | Default 2. Order of the Butterworth low-pass filter for perturbation sampling. Higher order increases attenuation above cutoff. |
+ | use_colored_noise          | bool   | Default false. Enable frequency-based colored noise sampling (Vlahov et al. RA-L 2024). Generates temporally-correlated perturbations via frequency-domain Gaussian sampling with PSD proportional to 1/f^gamma. Mutually exclusive with `use_low_pass_filter`. |
+ | colored_noise_exponent_vx  | double | Default 2.0. Gamma exponent for vx colored noise. Higher = smoother. 0 = white (Gaussian). |
+ | colored_noise_exponent_vy  | double | Default 2.0. Gamma exponent for vy colored noise (holonomic only). |
+ | colored_noise_exponent_wz  | double | Default 2.0. Gamma exponent for wz colored noise. |
+ | std_reduction_factor       | double | Default 1.0. Factor to geometrically reduce sampling std each MPPI iteration. Use with `iteration_count > 1` for iterative refinement (e.g. 0.7 = 30% reduction per iteration). 1.0 = no reduction. |
  | publish_optimal_trajectory | bool   | Publishes the full optimal trajectory sequence each control iteration for downstream  control systems, collision checkers, etc to have context beyond the next timestep. |
  | open_loop        | bool    | Default false. Useful when using low accelerations and when wheel odometry's latency causes issues in initial state estimation. |
 
@@ -219,6 +224,13 @@ controller_server:
       use_low_pass_filter: false
       filter_cutoff_frequency: 2.0
       filter_order: 2
+      # Colored noise (low-frequency MPPI) - alternative to LP filter
+      use_colored_noise: false
+      colored_noise_exponent_vx: 2.0
+      colored_noise_exponent_vy: 2.0
+      colored_noise_exponent_wz: 2.0
+      # Multi-iteration refinement (use with iteration_count > 1)
+      # std_reduction_factor: 0.7
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3
