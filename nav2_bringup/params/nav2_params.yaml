@@ -157,6 +157,9 @@ controller_server:
       motion_model: "diff_drive"
       diff_drive:
         plugin: "mppi::DiffDriveMotionModel"
+      use_low_pass_filter: false
+      filter_cutoff_frequency: 2.0
+      filter_order: 2
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3
